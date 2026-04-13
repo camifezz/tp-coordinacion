@@ -61,7 +61,14 @@ class SumFilter:
 def main():
     logging.basicConfig(level=logging.INFO)
     sum_filter = SumFilter()
-    sum_filter.start()
+    try:
+        sum_filter.start()
+    except middleware.MessageMiddlewareDisconnectedError:
+        logging.error("Lost connection to the message broker")
+        return 1
+    except middleware.MessageMiddlewareMessageError:
+        logging.error("Internal middleware error")
+        return 1
     return 0
 
 
