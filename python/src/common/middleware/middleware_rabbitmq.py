@@ -45,36 +45,26 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
         except pika.exceptions.AMQPError as e:
             raise MessageMiddlewareMessageError() from e
 
-    def start_consuming(self, on_message_callback, additional_sources=None):
+    def start_consuming(self, on_message_callback):
         """
         Comienza a escuchar mensajes de la cola de forma bloqueante.
         Por cada mensaje recibido invoca: on_message_callback(message, ack, nack)
           - message: cuerpo del mensaje
           - ack: función para confirmar que el mensaje se recibió correctamente (equivalente a un 200)
           - nack: función para indicar que algo falló procesando el mensaje (equivalente al 500)
-        additional_sources: lista opcional de tuplas (queue_name, callback) para consumir
-          colas adicionales en la misma conexión.
         Lanza MessageMiddlewareDisconnectedError si se perdió la conexión.
         Lanza MessageMiddlewareMessageError si ocurre un error interno.
         """
-        def make_callback(queue_name, cb):
-            def callback(ch, method, _properties, body):
-                logging.info(f"Received from {queue_name}: {body}")
-                ack  = lambda: ch.basic_ack(method.delivery_tag)
-                nack = lambda: ch.basic_nack(method.delivery_tag)
-                cb(body, ack, nack)
-            return callback
+        def callback(ch, method, _properties, body):
+            logging.info(f"Received from {self.queue_name}: {body}")
+            ack  = lambda: ch.basic_ack(method.delivery_tag)
+            nack = lambda: ch.basic_nack(method.delivery_tag)
+            on_message_callback(body, ack, nack)
 
         try:
             self.channel.basic_consume(queue=self.queue_name,
                                        auto_ack=False,
-                                       on_message_callback=make_callback(self.queue_name, on_message_callback))
-            if additional_sources:
-                for (queue_name, cb) in additional_sources:
-                    self.channel.queue_declare(queue=queue_name, durable=True, arguments={'x-queue-type': 'quorum'})
-                    self.channel.basic_consume(queue=queue_name,
-                                               auto_ack=False,
-                                               on_message_callback=make_callback(queue_name, cb))
+                                       on_message_callback=callback)
             self.channel.start_consuming()
         except pika.exceptions.AMQPConnectionError as e:
             raise MessageMiddlewareDisconnectedError() from e

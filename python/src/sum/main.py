@@ -73,10 +73,20 @@ class SumFilter:
 
     def start(self):
         eof_input_queue_name = f"{SUM_PREFIX}_{ID}_eof"
-        self.input_queue.start_consuming(
-            self.process_message,
-            additional_sources=[(eof_input_queue_name, self.process_eof_message)]
+        self.input_queue.channel.queue_declare(
+            queue=eof_input_queue_name, durable=True, arguments={"x-queue-type": "quorum"}
         )
+
+        def eof_callback(ch, method, _properties, body):
+            logging.info(f"Received from {eof_input_queue_name}: {body}")
+            ack  = lambda: ch.basic_ack(method.delivery_tag)
+            nack = lambda: ch.basic_nack(method.delivery_tag)
+            self.process_eof_message(body, ack, nack)
+
+        self.input_queue.channel.basic_consume(
+            queue=eof_input_queue_name, auto_ack=False, on_message_callback=eof_callback
+        )
+        self.input_queue.start_consuming(self.process_message)
 
     def close(self):
         self.input_queue.close()
