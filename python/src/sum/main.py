@@ -23,6 +23,12 @@ class SumFilter:
                 MOM_HOST, AGGREGATION_PREFIX, [f"{AGGREGATION_PREFIX}_{i}"]
             )
             self.data_output_exchanges.append(data_output_exchange)
+        self.eof_output_queues = []
+        for i in range(SUM_AMOUNT):
+            eof_output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
+                MOM_HOST, f"{SUM_PREFIX}_{i}_eof"
+            )
+            self.eof_output_queues.append(eof_output_queue)
         self.amount_by_fruit = {}  # {client_id: {fruit: FruitItem}}
 
     def _process_data(self, client_id, fruit, amount):
@@ -33,11 +39,9 @@ class SumFilter:
         ) + fruit_item.FruitItem(fruit, int(amount))
 
     def _broadcast_eof(self, client_id):
-        logging.info(f"Re-enqueuing {SUM_AMOUNT} EOF copies for client {client_id}")
-        for _ in range(SUM_AMOUNT):
-            self.input_queue.send(
-                message_protocol.internal.serialize([client_id, "EOF"])
-            )
+        logging.info(f"Broadcasting EOF for client {client_id} to all sum workers")
+        for eof_queue in self.eof_output_queues:
+            eof_queue.send(message_protocol.internal.serialize([client_id]))
 
     def _process_eof(self, client_id):
         logging.info(f"Sending totals for client {client_id} to aggregation")
@@ -58,19 +62,28 @@ class SumFilter:
         fields = message_protocol.internal.deserialize(message)
         if len(fields) == 3:
             self._process_data(*fields)
-        elif len(fields) == 1:
-            self._broadcast_eof(*fields)
         else:
-            self._process_eof(fields[0])
+            self._broadcast_eof(*fields)
+        ack()
+
+    def process_eof_message(self, message, ack, nack):
+        fields = message_protocol.internal.deserialize(message)
+        self._process_eof(fields[0])
         ack()
 
     def start(self):
-        self.input_queue.start_consuming(self.process_message)
+        eof_input_queue_name = f"{SUM_PREFIX}_{ID}_eof"
+        self.input_queue.start_consuming(
+            self.process_message,
+            additional_sources=[(eof_input_queue_name, self.process_eof_message)]
+        )
 
     def close(self):
         self.input_queue.close()
         for exchange in self.data_output_exchanges:
             exchange.close()
+        for eof_queue in self.eof_output_queues:
+            eof_queue.close()
 
 
 def main():

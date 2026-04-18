@@ -22,11 +22,20 @@ class JoinFilter:
         self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, OUTPUT_QUEUE
         )
+        self.top_count = {}  # {client_id: int}
 
     def process_message(self, message, ack, nack):
-        logging.info("Received top")
         fields = message_protocol.internal.deserialize(message)
         client_id, fruit_top = fields
+        count = self.top_count.get(client_id, 0) + 1
+        self.top_count[client_id] = count
+        logging.info(f"Received top {count}/{AGGREGATION_AMOUNT} for client {client_id}")
+
+        if count < AGGREGATION_AMOUNT:
+            ack()
+            return
+
+        del self.top_count[client_id]
         self.output_queue.send(message_protocol.internal.serialize([client_id, fruit_top]))
         ack()
 
