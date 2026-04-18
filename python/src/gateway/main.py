@@ -41,6 +41,7 @@ def handle_client_request(client_socket, message_handler):
         logging.error(e)
     finally:
         output_queue.close()
+        client_socket.close()
 
 
 def handle_client_response(client_list):
