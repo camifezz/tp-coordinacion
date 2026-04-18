@@ -1,7 +1,7 @@
 import os
 import logging
 
-from common import middleware, message_protocol, fruit_item
+from common import middleware, message_protocol
 
 MOM_HOST = os.environ["MOM_HOST"]
 INPUT_QUEUE = os.environ["INPUT_QUEUE"]
@@ -23,14 +23,19 @@ class JoinFilter:
             MOM_HOST, OUTPUT_QUEUE
         )
 
-    def process_messsage(self, message, ack, nack):
+    def process_message(self, message, ack, nack):
         logging.info("Received top")
-        fruit_top = message_protocol.internal.deserialize(message)
-        self.output_queue.send(message_protocol.internal.serialize(fruit_top))
+        fields = message_protocol.internal.deserialize(message)
+        client_id, fruit_top = fields
+        self.output_queue.send(message_protocol.internal.serialize([client_id, fruit_top]))
         ack()
 
     def start(self):
-        self.input_queue.start_consuming(self.process_messsage)
+        self.input_queue.start_consuming(self.process_message)
+
+    def close(self):
+        self.input_queue.close()
+        self.output_queue.close()
 
 
 def main():
@@ -44,6 +49,8 @@ def main():
     except middleware.MessageMiddlewareMessageError:
         logging.error("Internal middleware error")
         return 1
+    finally:
+        join_filter.close()
     return 0
 
 

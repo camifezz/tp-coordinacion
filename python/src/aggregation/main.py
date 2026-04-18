@@ -23,42 +23,39 @@ class AggregationFilter:
         self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, OUTPUT_QUEUE
         )
-        self.fruit_top = []
+        self.fruit_top = {}  # {client_id: [FruitItem]}
 
-    def _process_data(self, fruit, amount):
-        logging.info("Processing data message")
-        for i in range(len(self.fruit_top)):
-            if self.fruit_top[i].fruit == fruit:
-                self.fruit_top[i] = self.fruit_top[i] + fruit_item.FruitItem(
-                    fruit, amount
-                )
+    def _process_data(self, client_id, fruit, amount):
+        logging.info(f"Processing data for client {client_id}")
+        client_top = self.fruit_top.setdefault(client_id, [])
+        for i in range(len(client_top)):
+            if client_top[i].fruit == fruit:
+                client_top[i] = client_top[i] + fruit_item.FruitItem(fruit, amount)
                 return
-        bisect.insort(self.fruit_top, fruit_item.FruitItem(fruit, amount))
+        bisect.insort(client_top, fruit_item.FruitItem(fruit, amount))
 
-    def _process_eof(self):
-        logging.info("Received EOF")
-        fruit_chunk = list(self.fruit_top[-TOP_SIZE:])
+    def _process_eof(self, client_id):
+        logging.info(f"Received EOF for client {client_id}")
+        client_top = self.fruit_top.pop(client_id, [])
+        fruit_chunk = list(client_top[-TOP_SIZE:])
         fruit_chunk.reverse()
-        fruit_top = list(
-            map(
-                lambda fruit_item: (fruit_item.fruit, fruit_item.amount),
-                fruit_chunk,
-            )
-        )
-        self.output_queue.send(message_protocol.internal.serialize(fruit_top))
-        del self.fruit_top
+        top = [(fi.fruit, fi.amount) for fi in fruit_chunk]
+        self.output_queue.send(message_protocol.internal.serialize([client_id, top]))
 
-    def process_messsage(self, message, ack, nack):
-        logging.info("Process message")
+    def process_message(self, message, ack, nack):
         fields = message_protocol.internal.deserialize(message)
-        if len(fields) == 2:
+        if len(fields) == 3:
             self._process_data(*fields)
         else:
-            self._process_eof()
+            self._process_eof(*fields)
         ack()
 
     def start(self):
-        self.input_exchange.start_consuming(self.process_messsage)
+        self.input_exchange.start_consuming(self.process_message)
+
+    def close(self):
+        self.input_exchange.close()
+        self.output_queue.close()
 
 
 def main():
@@ -72,6 +69,8 @@ def main():
     except middleware.MessageMiddlewareMessageError:
         logging.error("Internal middleware error")
         return 1
+    finally:
+        aggregation_filter.close()
     return 0
 
 
