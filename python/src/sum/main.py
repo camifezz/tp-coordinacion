@@ -32,8 +32,15 @@ class SumFilter:
             fruit, fruit_item.FruitItem(fruit, 0)
         ) + fruit_item.FruitItem(fruit, int(amount))
 
+    def _broadcast_eof(self, client_id):
+        logging.info(f"Re-enqueuing {SUM_AMOUNT} EOF copies for client {client_id}")
+        for _ in range(SUM_AMOUNT):
+            self.input_queue.send(
+                message_protocol.internal.serialize([client_id, "EOF"])
+            )
+
     def _process_eof(self, client_id):
-        logging.info(f"Broadcasting data for client {client_id}")
+        logging.info(f"Sending totals for client {client_id} to aggregation")
         client_fruits = self.amount_by_fruit.pop(client_id, {})
         for final_fruit_item in client_fruits.values():
             for exchange in self.data_output_exchanges:
@@ -43,7 +50,7 @@ class SumFilter:
                     )
                 )
 
-        logging.info(f"Broadcasting EOF for client {client_id}")
+        logging.info(f"Sending EOF for client {client_id} to aggregation")
         for exchange in self.data_output_exchanges:
             exchange.send(message_protocol.internal.serialize([client_id]))
 
@@ -51,8 +58,10 @@ class SumFilter:
         fields = message_protocol.internal.deserialize(message)
         if len(fields) == 3:
             self._process_data(*fields)
+        elif len(fields) == 1:
+            self._broadcast_eof(*fields)
         else:
-            self._process_eof(*fields)
+            self._process_eof(fields[0])
         ack()
 
     def start(self):
@@ -76,7 +85,10 @@ def main():
         logging.error("Internal middleware error")
         return 1
     finally:
-        sum_filter.close()
+        try:
+            sum_filter.close()
+        except middleware.MessageMiddlewareCloseError:
+            logging.error("Error closing middleware connections")
     return 0
 
 

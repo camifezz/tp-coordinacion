@@ -1,7 +1,5 @@
 import os
 import logging
-import bisect
-
 from common import middleware, message_protocol, fruit_item
 
 ID = int(os.environ["ID"])
@@ -23,23 +21,28 @@ class AggregationFilter:
         self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, OUTPUT_QUEUE
         )
-        self.fruit_top = {}  # {client_id: [FruitItem]}
+        self.fruit_data = {}  # {client_id: {fruit: FruitItem}}
+        self.eof_count = {}   # {client_id: int}
 
     def _process_data(self, client_id, fruit, amount):
         logging.info(f"Processing data for client {client_id}")
-        client_top = self.fruit_top.setdefault(client_id, [])
-        for i in range(len(client_top)):
-            if client_top[i].fruit == fruit:
-                client_top[i] = client_top[i] + fruit_item.FruitItem(fruit, amount)
-                return
-        bisect.insort(client_top, fruit_item.FruitItem(fruit, amount))
+        client_data = self.fruit_data.setdefault(client_id, {})
+        client_data[fruit] = client_data.get(
+            fruit, fruit_item.FruitItem(fruit, 0)
+        ) + fruit_item.FruitItem(fruit, amount)
 
     def _process_eof(self, client_id):
-        logging.info(f"Received EOF for client {client_id}")
-        client_top = self.fruit_top.pop(client_id, [])
-        fruit_chunk = list(client_top[-TOP_SIZE:])
-        fruit_chunk.reverse()
-        top = [(fi.fruit, fi.amount) for fi in fruit_chunk]
+        count = self.eof_count.get(client_id, 0) + 1
+        self.eof_count[client_id] = count
+        logging.info(f"Received EOF {count}/{SUM_AMOUNT} for client {client_id}")
+
+        if count < SUM_AMOUNT:
+            return
+
+        del self.eof_count[client_id]
+        client_data = self.fruit_data.pop(client_id, {})
+        sorted_fruits = sorted(client_data.values())
+        top = [(fi.fruit, fi.amount) for fi in sorted_fruits[-TOP_SIZE:][::-1]]
         self.output_queue.send(message_protocol.internal.serialize([client_id, top]))
 
     def process_message(self, message, ack, nack):
@@ -70,7 +73,10 @@ def main():
         logging.error("Internal middleware error")
         return 1
     finally:
-        aggregation_filter.close()
+        try:
+            aggregation_filter.close()
+        except middleware.MessageMiddlewareCloseError:
+            logging.error("Error closing middleware connections")
     return 0
 
 

@@ -50,7 +50,10 @@ def main():
         logging.error("Internal middleware error")
         return 1
     finally:
-        join_filter.close()
+        try:
+            join_filter.close()
+        except middleware.MessageMiddlewareCloseError:
+            logging.error("Error closing middleware connections")
     return 0
 
 
