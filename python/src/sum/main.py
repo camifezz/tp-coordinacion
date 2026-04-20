@@ -1,5 +1,6 @@
 import os
 import logging
+import zlib
 
 from common import middleware, message_protocol, fruit_item
 
@@ -47,12 +48,12 @@ class SumFilter:
         logging.info(f"Sending totals for client {client_id} to aggregation")
         client_fruits = self.amount_by_fruit.pop(client_id, {})
         for final_fruit_item in client_fruits.values():
-            for exchange in self.data_output_exchanges:
-                exchange.send(
-                    message_protocol.internal.serialize(
-                        [client_id, final_fruit_item.fruit, final_fruit_item.amount]
-                    )
+            target = zlib.crc32(final_fruit_item.fruit.encode()) % AGGREGATION_AMOUNT
+            self.data_output_exchanges[target].send(
+                message_protocol.internal.serialize(
+                    [client_id, final_fruit_item.fruit, final_fruit_item.amount]
                 )
+            )
 
         logging.info(f"Sending EOF for client {client_id} to aggregation")
         for exchange in self.data_output_exchanges:
