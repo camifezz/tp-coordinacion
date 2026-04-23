@@ -52,3 +52,9 @@ Join implementa un segundo barrera por conteo de tops: espera recibir `AGGREGATI
 
 Cada Aggregation aporta el top de sus frutas. Join combina todos, reordena globalmente y toma los mejores `TOP_SIZE`. El resultado es el top final correcto.
 
+## Limitaciones y trabajo futuro
+
+La solución actual para el EOF entre los workers Sum comparte el channel entre dos consumers independientes (`input_queue` y `sum_{ID}_eof`), registrando ambos en el mismo channel para que el event loop los maneje secuencialmente. Esto tiene algunas desventajas: acopla la implementación a RabbitMQ específicamente (se accede a `input_queue.channel` directamente), rompe la independencia entre abstracciones del middleware, y depende de `prefetch_count=1` lo cual condiciona la performance.
+
+Una alternativa más robusta sería que los Sum workers se sincronicen entre sí: cuando un Sum recibe el EOF, envía sus datos de forma provisoria a Aggregation y luego transmite los registros que hayan cambiado desde ese envío inicial, una vez confirmado que todos los Sum procesaron sus datos. Esta opción no necesita compartir recursos entre abstracciones ni depender de configuraciones específicas del broker, pero implica una coordinación más compleja entre nodos que no llegué a implementar en esta entrega.
+
