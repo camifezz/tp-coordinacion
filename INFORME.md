@@ -58,3 +58,5 @@ La solución actual para el EOF entre los workers Sum comparte el channel entre 
 
 Una alternativa más robusta sería que los Sum workers se sincronicen entre sí: cuando un Sum recibe el EOF, envía sus datos de forma provisoria a Aggregation y luego transmite los registros que hayan cambiado desde ese envío inicial, una vez confirmado que todos los Sum procesaron sus datos. Esta opción no necesita compartir recursos entre abstracciones ni depender de configuraciones específicas del broker, pero implica una coordinación más compleja entre nodos que no llegué a implementar en esta entrega.
 
+Se sigue trabajando en una rama aparte, fuera de main pero la entrega "que funciona y cumple" se encuentra en la branch principal.
+
