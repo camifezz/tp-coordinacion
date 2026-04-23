@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 from common import middleware, message_protocol, fruit_item
 
 ID = int(os.environ["ID"])
@@ -15,6 +16,9 @@ class SumFilter:
     def __init__(self):
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             MOM_HOST, INPUT_QUEUE
+        )
+        self.eof_input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
+            MOM_HOST, f"{SUM_PREFIX}_{ID}_eof"
         )
         self.data_output_exchanges = []
         for i in range(AGGREGATION_AMOUNT):
@@ -70,24 +74,37 @@ class SumFilter:
         self._process_eof(fields[0])
         ack()
 
+    def _start_eof_listener(self):
+        # Consume la EOF queue en un thread separado y schedula el procesamiento
+        # en el event loop del thread principal usando add_callback_threadsafe.
+        # El EOF thread espera que el main thread termine antes de ackear,
+        # para que el ack se haga desde el thread correcto de la EOF connection.
+        def on_eof(message, ack, nack):
+            done = threading.Event()
+            def scheduled():
+                try:
+                    self.process_eof_message(message, lambda: None, lambda: None)
+                finally:
+                    done.set()
+            self.input_queue.connection.add_callback_threadsafe(scheduled)
+            done.wait(timeout=10)
+            ack()
+
+        try:
+            self.eof_input_queue.start_consuming(on_eof)
+        except (middleware.MessageMiddlewareDisconnectedError,
+                middleware.MessageMiddlewareMessageError):
+            logging.info("EOF listener stopped")
+
     def start(self):
-        eof_input_queue_name = f"{SUM_PREFIX}_{ID}_eof"
-        self.input_queue.channel.queue_declare(
-            queue=eof_input_queue_name, durable=True, arguments={"x-queue-type": "quorum"}
-        )
-
-        def eof_callback(ch, method, _properties, body):
-            logging.info(f"Received from {eof_input_queue_name}: {body}")
-            ack  = lambda: ch.basic_ack(method.delivery_tag)
-            nack = lambda: ch.basic_nack(method.delivery_tag)
-            self.process_eof_message(body, ack, nack)
-
-        self.input_queue.channel.basic_consume(
-            queue=eof_input_queue_name, auto_ack=False, on_message_callback=eof_callback
-        )
+        self.eof_thread = threading.Thread(target=self._start_eof_listener, daemon=True)
+        self.eof_thread.start()
         self.input_queue.start_consuming(self.process_message)
 
     def close(self):
+        self.eof_input_queue.close()
+        if hasattr(self, "eof_thread"):
+            self.eof_thread.join(timeout=5)
         self.input_queue.close()
         for exchange in self.data_output_exchanges:
             exchange.close()

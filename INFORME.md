@@ -25,11 +25,13 @@ Con esto garantizamos que los mensajes de procesen de a uno.
 
 El EOF de un cliente llega al `input_queue` compartido, por lo que lo recibe un único Sum worker. Ese worker necesita avisarle al resto de las instancias para que cada uno envíe sus parciales acumulados.
 
-La idea original era re-encolar 3 copias del EOF a la queue compartida (una para cada worker) pero lo que pasó es que no había garantía de que todos los workers Sum reciban la notificación de EOF, podía pasar que una misma instancia de SUm reciba 2 veces un EOF y otra instancia no reciba nada, entonces, terminaba mandando EOF vacios al Agg y los resultados no eran correctos.
+La idea original era enviar copias del EOF a la queue compartida (una para cada worker) pero lo que pasó es que no había garantía de que todos los workers Sum reciban la notificación de EOF, podía pasar que una misma instancia de SUm reciba 2 veces un EOF y otra instancia no reciba nada, entonces, terminaba mandando EOF vacios al Agg y los resultados no eran correctos.
 
-Para evitar esta race condition lo que implementé es una EOF queue `{SUM_PREFIX}_{i}_eof` por cada instancia de Sum. El worker Sum que recibe el EOF original hace broadcast al resto enviando una copia a cada EOF queue. Como cada una de estas EOF queue tiene un solo consumidor me garatizo que todos los workers Sum estén notificados una única vez.
+Para evitar esta race condition lo que implementé es una EOF queue `{SUM_PREFIX}_{i}_eof` por cada instancia de Sum. El worker Sum que recibe el EOF original hace broadcast al resto enviando una copia a cada EOF queue. Como cada una de estas EOF queue tiene un solo consumidor me garantizo que todos los workers Sum estén notificados una sola vez.
 
-Entonces, cada worker Sum consume de dos queues en simultáneo, del  `input_queue` compartido por donde le llegan los datos y de su propio EOF queue.
+Cada worker Sum consume de dos queues en simultáneo: del `input_queue` compartido por donde le llegan los datos, y de su propio EOF queue.
+
+Para poder escuchar ambas queues en paralelo sin compartir recursos del middleware (la implementación original compartia recursos del middleware), cada queue tiene su propio thread. La `eof_input_queue` corre en un thread separado. Cuando llega un EOF, ese thread no toca el estado compartido directamente sino que schedulea el procesamiento en el event loop del thread principal usando `add_callback_threadsafe`, y espera a que termine antes de ackear. De esta forma, tanto el procesamiento de datos como el flush del EOF ocurren secuencialmente en el mismo event loop, sin necesidad de locks.
 
 
 ### Etapa Reduce parcial - Aggregation
@@ -52,11 +54,9 @@ Join implementa un segundo barrera por conteo de tops: espera recibir `AGGREGATI
 
 Cada Aggregation aporta el top de sus frutas. Join combina todos, reordena globalmente y toma los mejores `TOP_SIZE`. El resultado es el top final correcto.
 
-## Limitaciones y trabajo futuro
+## Mejoras respecto a la implementación inicial
 
-La solución actual para el EOF entre los workers Sum comparte el channel entre dos consumers independientes (`input_queue` y `sum_{ID}_eof`), registrando ambos en el mismo channel para que el event loop los maneje secuencialmente. Esto tiene algunas desventajas: acopla la implementación a RabbitMQ específicamente (se accede a `input_queue.channel` directamente), rompe la independencia entre abstracciones del middleware, y depende de `prefetch_count=1` lo cual condiciona la performance.
+La implementación original registraba ambos consumers (`input_queue` y `sum_{ID}_eof`) en el mismo channel, accediendo a `input_queue.channel` directamente desde fuera del middleware. Esto acoplaba la solución a RabbitMQ y rompía la independencia entre abstracciones.
 
-Una alternativa más robusta sería que los Sum workers se sincronicen entre sí: cuando un Sum recibe el EOF, envía sus datos de forma provisoria a Aggregation y luego transmite los registros que hayan cambiado desde ese envío inicial, una vez confirmado que todos los Sum procesaron sus datos. Esta opción no necesita compartir recursos entre abstracciones ni depender de configuraciones específicas del broker, pero implica una coordinación más compleja entre nodos que no llegué a implementar en esta entrega.
-
-Se sigue trabajando en una rama aparte, fuera de main pero la entrega "que funciona y cumple" se encuentra en la branch principal.
+La versión actual resuelve esto dando a cada queue su propia conexión y corriendo la `eof_input_queue` en un thread separado. Cuando llega un EOF, el EOF thread lo schedula en el event loop del main thread  con `add_callback_threadsafe` y espera a que termine de procesar todo. Así el procesamiento de datos y el flush del EOF son secuenciales en el mismo event loop, sin locks y sin compartir recursos internos del middleware entre abstracciones.
 
