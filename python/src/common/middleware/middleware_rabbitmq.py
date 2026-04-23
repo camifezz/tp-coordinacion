@@ -27,7 +27,6 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
         self.connection = pika.BlockingConnection(pika.ConnectionParameters(host))
         self.channel = self.connection.channel()
         self.channel.queue_declare(queue=self.queue_name, durable=True, arguments={'x-queue-type': 'quorum'})
-        # RabbitMQ espera el ack de cada mensaje antes de mandarle otro al consumidor
         self.channel.basic_qos(prefetch_count=1)
 
     def send(self, message):

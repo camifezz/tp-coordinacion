@@ -1,7 +1,5 @@
 import os
 import logging
-import zlib
-
 from common import middleware, message_protocol, fruit_item
 
 ID = int(os.environ["ID"])
@@ -48,8 +46,8 @@ class SumFilter:
         logging.info(f"Sending totals for client {client_id} to aggregation")
         client_fruits = self.amount_by_fruit.pop(client_id, {})
         for final_fruit_item in client_fruits.values():
-            target = zlib.crc32(final_fruit_item.fruit.encode()) % AGGREGATION_AMOUNT
-            self.data_output_exchanges[target].send(
+            hash_name = sum(ord(c) for c in final_fruit_item.fruit) % AGGREGATION_AMOUNT
+            self.data_output_exchanges[hash_name].send(
                 message_protocol.internal.serialize(
                     [client_id, final_fruit_item.fruit, final_fruit_item.amount]
                 )
